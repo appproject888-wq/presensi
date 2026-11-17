@@ -75,6 +75,7 @@ button:hover:not(:disabled){background:var(--bg)}
 button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
 button.primary:hover:not(:disabled){background:var(--accent-2)}
 button:disabled{opacity:.5;cursor:default}
+button[hidden]{display:none}
 input{
   font:inherit;width:100%;padding:10px 12px;margin-top:8px;border-radius:10px;
   border:1px solid var(--line);background:var(--bg);color:var(--text);
@@ -114,6 +115,21 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
 @media (max-width:480px){
   h1{font-size:1rem}
 }
+
+/* ===== mode layar penuh ===== */
+:fullscreen body{overflow:hidden}
+:fullscreen .wrap{max-width:none;height:100vh;padding:14px;display:flex;flex-direction:column}
+:fullscreen .topbar{margin-bottom:10px}
+:fullscreen .grid{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) 340px}
+:fullscreen .kamera{display:flex;flex-direction:column;min-height:0}
+:fullscreen .stage{flex:1;min-height:0;aspect-ratio:auto}
+:fullscreen .panel{min-height:0;overflow:auto}
+:fullscreen #daftarBox{margin-top:8px}
+:-webkit-full-screen .wrap{max-width:none;height:100vh;padding:14px;display:flex;flex-direction:column}
+:-webkit-full-screen .grid{flex:1;min-height:0;grid-template-columns:minmax(0,1fr) 340px}
+:-webkit-full-screen .kamera{display:flex;flex-direction:column;min-height:0}
+:-webkit-full-screen .stage{flex:1;min-height:0;aspect-ratio:auto}
+:-webkit-full-screen .panel{min-height:0;overflow:auto}
 </style>
 </head>
 <body>
@@ -130,7 +146,7 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
   </header>
 
   <div class="grid">
-    <section class="card">
+    <section class="card kamera">
       <div class="stage">
         <video id="video" playsinline muted></video>
         <canvas id="overlay"></canvas>
@@ -138,6 +154,7 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
       <div class="controls">
         <button id="btnStart" class="primary">Mulai</button>
         <button id="btnMode" disabled>Mode: Presensi</button>
+        <button id="btnFull">Layar penuh</button>
       </div>
       <div id="daftarBox" hidden>
         <input id="inID" placeholder="ID pegawai (contoh P001)" autocomplete="off">
@@ -148,7 +165,7 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
       <p id="msg">Tekan Mulai, lalu izinkan kamera.</p>
     </section>
 
-    <section class="card">
+    <section class="card panel">
       <h2>Hasil</h2>
       <div id="hasil"><div class="big-msg"><div class="t">Menunggu wajah...</div></div></div>
 
@@ -183,6 +200,7 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
   const DETECT_SIZE = 320;
   const SPEAK_REPEAT_MS = 15000; // kalimat yang sama tidak diulang dalam 15 detik
   const HASIL_RESET_MS = 4000;   // setelah wajah hilang, daftar hasil dikosongkan
+  const LABEL_HOLD_MS = 5000;    // nama di atas kotak wajah tampil selama ini
 
   // ----- pengaturan liveness (anti foto) -----
   const LIVE_WINDOW_MS = 2500;   // rentang waktu yang dilihat untuk gerakan/kedipan
@@ -382,7 +400,8 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
         if (d < 0.5 * Math.max(b.width, b.height) && d < dMin) { t = k; dMin = d; }
       });
       if (!t) {
-        t = { id: ++trackSeq, hist: [], liveUntil: 0, cx: cx, cy: cy, w: b.width, lastT: now };
+        t = { id: ++trackSeq, hist: [], liveUntil: 0, cx: cx, cy: cy, w: b.width, lastT: now,
+              label: '', labelKind: '', labelUntil: 0 };
         tracks.push(t);
       }
       dipakai.add(t);
@@ -454,7 +473,19 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
     }
   }
 
-  function tampilkanBanyak(r) {
+  // teks label di atas kotak wajah untuk satu hasil
+  function labelDari(r) {
+    switch (r.status) {
+      case 'masuk': return { teks: r.nama + ' · Masuk', kelas: 'ok' };
+      case 'pulang': return { teks: r.nama + ' · Pulang', kelas: 'ok' };
+      case 'cooldown': return { teks: r.nama + ' · Sudah tercatat', kelas: 'warn' };
+      case 'tidak_dikenali': return { teks: 'Belum terdaftar', kelas: 'bad' };
+      default: return null;
+    }
+  }
+
+  // trackKirim: wajah yang dikirim, urutannya sama dengan daftar hasil dari server
+  function tampilkanBanyak(r, trackKirim) {
     $('sServer').textContent = 'terhubung';
     if (!r.ok) {
       setHasil('Gagal', 'bad', r.error || '');
@@ -467,6 +498,21 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
       setHasil('Belum ada pegawai terdaftar', 'warn');
       bicara('Belum ada pegawai terdaftar');
       return;
+    }
+
+    // pasang nama di atas kotak wajah hanya kalau urutannya pasti sama
+    const sejajar = trackKirim && daftar.length === trackKirim.length;
+    if (sejajar) {
+      const now = Date.now();
+      daftar.forEach(function (item, i) {
+        const lb = labelDari(item);
+        const tr = trackKirim[i];
+        if (lb && tr) {
+          tr.label = lb.teks;
+          tr.labelKind = lb.kelas;
+          tr.labelUntil = now + LABEL_HOLD_MS;
+        }
+      });
     }
 
     const h = $('hasil');
@@ -549,17 +595,45 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
       .finally(function () { $('btnDaftar').disabled = false; });
   }
 
+  // gambar kotak wajah dan nama di atasnya
+  // canvas ditampilkan terbalik (cermin) oleh CSS, jadi teks dibalik dulu agar tampil normal
   function draw(faces, now) {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.lineWidth = 3;
+    ctx.font = '600 16px Inter, system-ui, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
     for (const f of faces) {
       const b = f.detection.box;
       const hidup = sudahHidup(f, now);
       ctx.strokeStyle = hidup ? '#22c55e' : '#f59e0b';
       ctx.setLineDash(hidup ? [] : [8, 6]);
       ctx.strokeRect(b.x, b.y, b.width, b.height);
+      ctx.setLineDash([]);
+
+      const tr = f._track;
+      if (tr && tr.label && tr.labelUntil > now) {
+        const cx = b.x + b.width / 2;
+        const y = Math.max(b.y - 8, 22);
+        const lebar = ctx.measureText(tr.label).width + 20;
+        const warna = tr.labelKind === 'bad' ? '#dc2626' : tr.labelKind === 'warn' ? '#d97706' : '#16a34a';
+        ctx.save();
+        ctx.translate(cx, 0);
+        ctx.scale(-1, 1);
+        ctx.translate(-cx, 0);
+        ctx.fillStyle = warna;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+          ctx.roundRect(cx - lebar / 2, y - 26, lebar, 26, 8);
+        } else {
+          ctx.rect(cx - lebar / 2, y - 26, lebar, 26);
+        }
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(tr.label, cx, y - 6);
+        ctx.restore();
+      }
     }
-    ctx.setLineDash([]);
   }
 
   $('btnMode').addEventListener('click', function () {
@@ -576,6 +650,22 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
       setHasil('Mode daftar');
       setMsg('Isi ID, nama, dan PIN, lalu tekan tombol.');
     }
+  });
+
+  // layar penuh untuk seluruh halaman (kamera besar, hasil di samping)
+  const btnFull = $('btnFull');
+  if (!document.fullscreenEnabled) btnFull.hidden = true;
+  btnFull.addEventListener('click', function () {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().catch(function (e) {
+        log('Layar penuh gagal: ' + e.message);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  });
+  document.addEventListener('fullscreenchange', function () {
+    btnFull.textContent = document.fullscreenElement ? 'Keluar layar penuh' : 'Layar penuh';
   });
 
   $('btnDaftar').addEventListener('click', function () {
@@ -645,9 +735,11 @@ li{padding:6px 0;border-bottom:1px solid var(--line)}
           if (siap.length > 0 && !busy && now - lastSend >= SCAN_GAP_MS) {
             busy = true;
             lastSend = now;
-            const vecs = siap.slice(0, MAKS_WAJAH).map(function (f) { return Array.from(f.descriptor); });
+            const kirimFaces = siap.slice(0, MAKS_WAJAH);
+            const vecs = kirimFaces.map(function (f) { return Array.from(f.descriptor); });
+            const trackKirim = kirimFaces.map(function (f) { return f._track; });
             kirim({ action: 'attend', vecs: vecs })
-              .then(tampilkanBanyak)
+              .then(function (r) { tampilkanBanyak(r, trackKirim); })
               .catch(function (err) {
                 $('sServer').textContent = 'gagal';
                 setHasil('Gagal terhubung', 'bad', err.message);
