@@ -1,577 +1,184 @@
-<!doctype html>
-<html lang="id">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Presensi Wajah</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
-<style>
-:root{
-  --bg:#03070d;
-  --panel:rgba(8,18,32,.78);
-  --line:rgba(0,240,255,.28);
-  --cyan:#00f0ff;
-  --violet:#7c4dff;
-  --magenta:#ff2bd6;
-  --green:#39ff88;
-  --red:#ff3860;
-  --amber:#ffb703;
-  --text:#d7f7ff;
-  --muted:#6f8aa0;
-}
-*{box-sizing:border-box}
-body{
-  margin:0;min-height:100vh;color:var(--text);
-  font:16px/1.4 'Rajdhani',system-ui,-apple-system,"Segoe UI",sans-serif;
-  background:
-    radial-gradient(1100px 560px at 8% -12%, rgba(0,240,255,.14), transparent 60%),
-    radial-gradient(900px 520px at 112% 6%, rgba(255,43,214,.11), transparent 60%),
-    linear-gradient(180deg,#03070d 0%,#020409 100%);
-  background-attachment:fixed;
-}
-/* grid tipis di latar belakang */
-body::before{
-  content:"";position:fixed;inset:0;pointer-events:none;opacity:.08;
-  background-image:linear-gradient(var(--cyan) 1px,transparent 1px),linear-gradient(90deg,var(--cyan) 1px,transparent 1px);
-  background-size:44px 44px;
-}
-main{position:relative;max-width:980px;margin:0 auto;padding:16px}
+/**
+ * PRESENSI WAJAH - backend (Google Apps Script)
+ *
+ * Dipasang di dalam Google Sheets (Extensions -> Apps Script).
+ * Sheet yang dibutuhkan:
+ *   Pegawai  : ID | Nama | Divisi | Wajah | Aktif
+ *   Presensi : Tanggal | ID | Nama | Masuk | Pulang | Kecocokan | Ms_Terakhir
+ *
+ * Script Properties (Project Settings -> Script Properties):
+ *   API_TOKEN  : token rahasia, harus sama dengan di halaman presensi
+ *   ADMIN_PIN  : PIN untuk mode daftar (4-6 angka)
+ */
 
-/* ===== header ===== */
-.top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:6px 0 16px}
-h1{
-  font-family:'Orbitron',sans-serif;font-weight:900;font-size:1.25rem;margin:0;
-  letter-spacing:.14em;color:var(--cyan);
-  text-shadow:0 0 12px rgba(0,240,255,.55);
-}
-h1 span{color:var(--magenta);text-shadow:0 0 12px rgba(255,43,214,.55);margin-left:.4em}
-.pill{
-  display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:999px;
-  border:1px solid var(--line);background:rgba(0,240,255,.06);
-  font-family:'Orbitron',sans-serif;font-size:.65rem;letter-spacing:.16em;color:var(--cyan);
-}
-.dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 10px var(--green);animation:pulse 1.6s ease-in-out infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+const SHEET_PEGAWAI = 'Pegawai';
+const SHEET_PRESENSI = 'Presensi';
+const MATCH_THRESHOLD = 0.5;   // jarak maksimum dianggap cocok
+const MARGIN = 0.05;           // selisih minimum antara pegawai terbaik dan kedua
+const COOLDOWN_MENIT = 5;      // jeda minimum sebelum scan dicatat ulang
+const MAKS_WAJAH_PER_KIRIM = 10; // batas wajah dalam satu kiriman
+const TZ = 'Asia/Jakarta';
 
-/* ===== layout ===== */
-.grid{display:grid;gap:14px;grid-template-columns:1fr}
-@media (min-width:760px){.grid{grid-template-columns:1.4fr 1fr}}
-.card{
-  position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:14px;
-  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
-  box-shadow:0 0 28px rgba(0,240,255,.08);
-}
-.card::before{ /* garis neon di atas kartu */
-  content:"";position:absolute;left:18px;right:18px;top:-1px;height:2px;border-radius:2px;
-  background:linear-gradient(90deg,transparent,var(--cyan),var(--magenta),transparent);
-  opacity:.8;
+function doGet() {
+  return json_({ ok: true, info: 'API presensi aktif' });
 }
 
-/* ===== kamera + HUD ===== */
-.stage{
-  position:relative;width:100%;aspect-ratio:4/3;background:#000;border-radius:12px;overflow:hidden;
-  border:1px solid rgba(0,240,255,.4);box-shadow:0 0 34px rgba(0,240,255,.18), inset 0 0 40px rgba(0,240,255,.08);
-}
-.stage video,.stage canvas{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transform:scaleX(-1)}
-.stage canvas{pointer-events:none;z-index:1}
-.stage::after{ /* garis pemindai yang bergerak */
-  content:"";position:absolute;inset:0;z-index:2;pointer-events:none;
-  background:linear-gradient(180deg,transparent 0%,transparent 46%,rgba(0,240,255,.16) 50%,transparent 54%,transparent 100%);
-  background-size:100% 300%;animation:scan 4.5s linear infinite;
-}
-@keyframes scan{from{background-position:0 100%}to{background-position:0 0}}
-.c{position:absolute;width:26px;height:26px;border-color:var(--cyan);border-style:solid;border-width:0;z-index:3;filter:drop-shadow(0 0 6px var(--cyan))}
-.tl{top:10px;left:10px;border-top-width:2px;border-left-width:2px}
-.tr{top:10px;right:10px;border-top-width:2px;border-right-width:2px}
-.bl{bottom:10px;left:10px;border-bottom-width:2px;border-left-width:2px}
-.br{bottom:10px;right:10px;border-bottom-width:2px;border-right-width:2px}
-.live{
-  position:absolute;top:12px;left:50%;transform:translateX(-50%);z-index:3;
-  font-family:'Orbitron',sans-serif;font-size:.6rem;letter-spacing:.2em;color:var(--cyan);
-  padding:3px 8px;border:1px solid rgba(0,240,255,.4);border-radius:4px;background:rgba(0,0,0,.45);
-}
-
-/* ===== tombol & input ===== */
-.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:14px}
-button{
-  font:600 15px 'Rajdhani',sans-serif;letter-spacing:.1em;text-transform:uppercase;
-  min-height:44px;padding:11px 18px;border-radius:10px;cursor:pointer;
-  border:1px solid var(--cyan);background:rgba(0,240,255,.07);color:var(--cyan);
-  box-shadow:0 0 12px rgba(0,240,255,.12);transition:all .2s ease;
-}
-button:hover:not(:disabled){background:rgba(0,240,255,.16);box-shadow:0 0 20px rgba(0,240,255,.35)}
-button.primary{
-  background:linear-gradient(90deg,#00f0ff,#7c4dff);color:#00101a;border-color:transparent;
-  font-weight:700;box-shadow:0 0 22px rgba(0,240,255,.4);
-}
-button.primary:hover:not(:disabled){box-shadow:0 0 30px rgba(124,77,255,.6);filter:brightness(1.08)}
-button:disabled{opacity:.35;cursor:default;box-shadow:none}
-input{
-  font:600 16px 'Rajdhani',sans-serif;letter-spacing:.04em;width:100%;padding:10px 12px;margin-top:10px;
-  border-radius:10px;border:1px solid var(--line);background:rgba(0,0,0,.4);color:var(--text);
-  transition:all .2s ease;
-}
-input::placeholder{color:var(--muted)}
-input:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 14px rgba(0,240,255,.3)}
-#daftarBox{margin-top:14px}
-#daftarBox[hidden]{display:none}
-#msg{margin:14px 0 0;color:var(--muted);letter-spacing:.03em}
-
-/* ===== panel hasil ===== */
-.hasil{
-  font-weight:700;font-size:1.7rem;letter-spacing:.03em;
-  padding:16px;border-radius:12px;min-height:130px;
-  background:rgba(0,0,0,.42);border:1px solid var(--line);
-  display:flex;flex-direction:column;justify-content:center;
-  box-shadow:inset 0 0 30px rgba(0,240,255,.05);
-}
-.hasil small{font-size:1rem;font-weight:500;color:var(--muted);margin-top:6px;letter-spacing:.02em}
-.hasil.ok{color:var(--green);text-shadow:0 0 14px rgba(57,255,136,.45)}
-.hasil.bad{color:var(--red);text-shadow:0 0 14px rgba(255,56,96,.45)}
-.hasil.warn{color:var(--amber);text-shadow:0 0 14px rgba(255,183,3,.4)}
-.baris{padding:9px 0;border-bottom:1px dashed rgba(0,240,255,.22);font-size:1.45rem;font-weight:700}
-.baris:last-child{border-bottom:none}
-.baris small{display:block;font-size:.95rem;font-weight:500;color:var(--muted);margin-top:2px}
-.baris.ok{color:var(--green);text-shadow:0 0 12px rgba(57,255,136,.35)}
-.baris.bad{color:var(--red);text-shadow:0 0 12px rgba(255,56,96,.35)}
-.baris.warn{color:var(--amber);text-shadow:0 0 12px rgba(255,183,3,.3)}
-
-/* ===== status & log ===== */
-h2{
-  font-family:'Orbitron',sans-serif;font-size:.68rem;font-weight:700;letter-spacing:.22em;color:var(--muted);
-  margin:18px 0 8px;display:flex;align-items:center;gap:10px;text-transform:uppercase;
-}
-h2::after{content:"";flex:1;height:1px;background:linear-gradient(90deg,var(--line),transparent)}
-dl{display:grid;grid-template-columns:auto 1fr;gap:8px 14px;margin:0}
-dt{color:var(--muted);letter-spacing:.06em;text-transform:uppercase;font-size:.9rem}
-dd{margin:0;font-weight:700;color:var(--cyan);overflow-wrap:anywhere}
-ul{
-  padding:0;list-style:none;max-height:230px;overflow:auto;margin:0;
-  font-family:'Consolas','Courier New',monospace;font-size:.78rem;color:#8fb8c9;
-}
-li{padding:5px 2px;border-bottom:1px solid rgba(0,240,255,.08)}
-ul::-webkit-scrollbar{width:6px}
-ul::-webkit-scrollbar-thumb{background:rgba(0,240,255,.3);border-radius:3px}
-
-/* ===== layar kecil ===== */
-@media (max-width:480px){
-  h1{font-size:1rem}
-  .hasil{font-size:1.4rem}
-  .baris{font-size:1.2rem}
-}
-@media (prefers-reduced-motion:reduce){
-  .stage::after,.dot{animation:none}
-}
-</style>
-</head>
-<body>
-<main>
-  <header class="top">
-    <h1>PRESENSI<span>WAJAH</span></h1>
-    <span class="pill"><i class="dot"></i>FACE ID · AKTIF</span>
-  </header>
-
-  <div class="grid">
-    <section class="card">
-      <div class="stage">
-        <video id="video" playsinline muted></video>
-        <canvas id="overlay"></canvas>
-        <span class="c tl"></span><span class="c tr"></span><span class="c bl"></span><span class="c br"></span>
-        <span class="live">● LIVE</span>
-      </div>
-      <div class="row">
-        <button id="btnStart" class="primary">Mulai</button>
-        <button id="btnMode" disabled>Mode: Presensi</button>
-      </div>
-      <div id="daftarBox" hidden>
-        <input id="inID" placeholder="ID pegawai (contoh P001)" autocomplete="off">
-        <input id="inNama" placeholder="Nama lengkap" autocomplete="off">
-        <input id="inPin" type="password" placeholder="PIN admin" autocomplete="off">
-        <div class="row"><button id="btnDaftar">Ambil 5 foto lalu simpan</button></div>
-      </div>
-      <p id="msg">Tekan Mulai, lalu izinkan kamera.</p>
-    </section>
-
-    <section class="card">
-      <div id="hasil" class="hasil">Menunggu wajah...</div>
-      <h2>Status</h2>
-      <dl>
-        <dt>Kamera</dt><dd id="sCam">belum aktif</dd>
-        <dt>Model AI</dt><dd id="sModel">belum dimuat</dd>
-        <dt>Server</dt><dd id="sServer">-</dd>
-      </dl>
-      <h2>Log</h2>
-      <ul id="log"></ul>
-    </section>
-  </div>
-</main>
-
-<script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
-<script>
-(function () {
-  'use strict';
-
-  // ====== PENGATURAN: ganti dua baris ini ======
-  const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxmNhP9CaxdzDuYkbkjOYk8Bqs9Faf6OrVxMccc28M2bpnkAxf9ZOZCP-LYvEjoUFW31Q/exec';  // URL yang berakhiran /exec
-  const API_TOKEN = 'rahasia-kantor-2026';          // harus sama dengan API_TOKEN di Apps Script
-  // =============================================
-
-  const MODEL_URL = 'https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@0.22.2/weights';
-  const SCAN_GAP_MS = 2500;   // jeda minimal antar kiriman ke server
-  const MAKS_WAJAH = 10;      // batas wajah yang dikirim sekali jalan
-  const ENROLL_SAMPLES = 5;
-  const ENROLL_GAP_MS = 500;
-  const DETECT_SIZE = 320;
-  const SPEAK_REPEAT_MS = 15000; // kalimat yang sama tidak diulang dalam 15 detik
-  const HASIL_RESET_MS = 4000;   // setelah wajah hilang, daftar hasil dikosongkan
-
-  const $ = (id) => document.getElementById(id);
-  const video = $('video');
-  const canvas = $('overlay');
-  const ctx = canvas.getContext('2d');
-
-  let running = false;
-  let modelsReady = false;
-  let mode = 'presensi';   // 'presensi' | 'daftar'
-  let busy = false;
-  let lastSend = 0;
-  let enroll = null;       // { samples, lastT, id, nama, pin }
-  let lastSpoken = { text: '', t: 0 };
-  let hasilIsi = false;    // apakah kotak hasil sedang berisi daftar nama
-  let hasilT = 0;          // kapan terakhir kotak hasil diisi
-
-  function log(text) {
-    const li = document.createElement('li');
-    li.textContent = new Date().toLocaleTimeString('id-ID') + '  ' + text;
-    const list = $('log');
-    list.prepend(li);
-    while (list.children.length > 50) list.lastChild.remove();
-  }
-
-  function setMsg(text) { $('msg').textContent = text; }
-
-  function setHasil(teks, kelas, sub) {
-    const h = $('hasil');
-    h.className = 'hasil ' + (kelas || '');
-    h.textContent = teks;
-    if (sub) {
-      const s = document.createElement('small');
-      s.textContent = sub;
-      h.appendChild(s);
+function doPost(e) {
+  try {
+    const body = JSON.parse(e.postData.contents);
+    const props = PropertiesService.getScriptProperties();
+    if (body.token !== props.getProperty('API_TOKEN')) {
+      return json_({ ok: false, error: 'Token salah' });
     }
-    hasilIsi = false;
+    if (body.action === 'attend') return json_(absenBanyak_(body.vecs));
+    if (body.action === 'enroll') return json_(daftar_(body));
+    return json_({ ok: false, error: 'Aksi tidak dikenal' });
+  } catch (err) {
+    return json_({ ok: false, error: String(err) });
   }
+}
 
-  function bicara(text, paksa) {
+function json_(obj) {
+  return ContentService.createTextOutput(JSON.stringify(obj))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function validVec_(vec) {
+  return Array.isArray(vec) && vec.length === 128 &&
+    vec.every(function (v) { return typeof v === 'number' && isFinite(v); });
+}
+
+// jarak Euclidean antara dua descriptor wajah
+function jarak_(a, b) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) {
+    const d = a[i] - b[i];
+    s += d * d;
+  }
+  return Math.sqrt(s);
+}
+
+// ubah isi sel jadi teks (Sheets kadang mengubah tanggal/angka otomatis)
+function teks_(v) {
+  return v instanceof Date
+    ? Utilities.formatDate(v, TZ, 'yyyy-MM-dd')
+    : String(v).trim();
+}
+
+function loadPegawai_() {
+  const rows = SpreadsheetApp.getActive().getSheetByName(SHEET_PEGAWAI).getDataRange().getValues();
+  const hasil = [];
+  for (let i = 1; i < rows.length; i++) {
+    const id = teks_(rows[i][0]);
+    const nama = teks_(rows[i][1]);
+    const wajah = rows[i][3];
+    const aktif = teks_(rows[i][4]).toLowerCase();
+    if (!id || !wajah || aktif === 'tidak') continue;
     try {
-      if (!('speechSynthesis' in window)) return;
-      const now = Date.now();
-      if (!paksa && text === lastSpoken.text && now - lastSpoken.t < SPEAK_REPEAT_MS) return;
-      lastSpoken = { text: text, t: now };
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'id-ID';
-      u.rate = 0.95;
-      const voice = speechSynthesis.getVoices().find(function (v) {
-        return v.lang && v.lang.toLowerCase().indexOf('id') === 0;
-      });
-      if (voice) u.voice = voice;
-      speechSynthesis.cancel();
-      speechSynthesis.speak(u);
-    } catch (e) {
-      log('Suara gagal: ' + e.message);
-    }
-  }
-
-  function explainCameraError(e) {
-    const map = {
-      NotAllowedError: 'Izin kamera ditolak. Buka pengaturan situs di browser lalu izinkan kamera.',
-      NotFoundError: 'Tidak ada kamera yang terdeteksi.',
-      NotReadableError: 'Kamera sedang dipakai aplikasi lain.',
-      OverconstrainedError: 'Resolusi kamera tidak didukung.',
-      SecurityError: 'Diblokir keamanan browser (halaman harus HTTPS).'
-    };
-    return (map[e.name] || 'Gagal membuka kamera') + ' [' + e.name + ']';
-  }
-
-  async function startCamera() {
-    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error('Kamera tidak tersedia. Halaman harus dibuka lewat HTTPS.');
-    }
-    let stream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
-        audio: false
-      });
-    } catch (e) {
-      throw new Error(explainCameraError(e));
-    }
-    video.srcObject = stream;
-    await video.play();
-  }
-
-  async function loadModels() {
-    if (!window.faceapi) throw new Error('Library face-api.js gagal dimuat. Cek koneksi internet.');
-    $('sModel').textContent = 'memuat...';
-    await Promise.all([
-      faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
-      faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
-      faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL)
-    ]);
-    modelsReady = true;
-    $('sModel').textContent = 'siap';
-    log('Model AI dimuat');
-  }
-
-  async function keepScreenAwake() {
-    try {
-      await navigator.wakeLock.request('screen');
-      log('Layar dibuat tetap menyala');
+      hasil.push({ id: id, nama: nama, vec: JSON.parse(wajah) });
     } catch (_) {
-      log('Wake Lock tidak tersedia');
+      // baris dengan data wajah rusak dilewati
     }
   }
+  return hasil;
+}
 
-  // kirim data ke Apps Script; text/plain agar tidak kena pemeriksaan CORS yang rumit
-  async function kirim(payload) {
-    payload.token = API_TOKEN;
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
-    });
-    return res.json();
-  }
+// cari pegawai yang cocok untuk satu wajah; null berarti belum terdaftar
+function cariPegawai_(vec, pegawai) {
+  const urut = pegawai
+    .map(function (p) { return { p: p, d: jarak_(vec, p.vec) }; })
+    .sort(function (a, b) { return a.d - b.d; });
+  const terbaik = urut[0];
+  const kedua = urut[1];
+  if (terbaik.d > MATCH_THRESHOLD) return null;
+  if (kedua && (kedua.d - terbaik.d) < MARGIN) return null;
+  const kecocokan = Math.round(Math.max(0, 1 - terbaik.d) * 1000) / 10; // contoh: 92.3
+  return { p: terbaik.p, kecocokan: kecocokan };
+}
 
-  // ubah satu hasil dari server menjadi tampilan
-  function tafsirItem(r) {
-    const pct = (r.kecocokan != null) ? 'kecocokan ' + r.kecocokan.toFixed(1) + '%' : '';
-    switch (r.status) {
-      case 'masuk':
-        return { teks: r.nama + ' - MASUK', kelas: 'ok', sub: 'Jam ' + r.jam + ' · ' + pct, suara: r.nama + ' hadir', log: 'Masuk: ' + r.nama };
-      case 'pulang':
-        return { teks: r.nama + ' - PULANG', kelas: 'ok', sub: 'Jam ' + r.jam + ' · ' + pct, suara: r.nama + ' pulang', log: 'Pulang: ' + r.nama };
-      case 'cooldown':
-        return { teks: r.nama + ' - sudah tercatat', kelas: 'warn', sub: pct, suara: r.nama + ' sudah tercatat', log: null };
-      case 'kosong':
-        return { teks: 'Belum ada pegawai terdaftar', kelas: 'warn', sub: '', suara: 'Belum ada pegawai terdaftar', log: null };
-      case 'error':
-        return { teks: 'Gagal: ' + (r.error || ''), kelas: 'bad', sub: '', suara: null, log: 'ERROR: ' + (r.error || '') };
-      default:
-        return null; // 'tidak_dikenali' dihitung di tampilkanBanyak
+// proses banyak wajah sekaligus dalam satu kiriman
+function absenBanyak_(vecs) {
+  if (!Array.isArray(vecs)) return { ok: false, error: 'Data wajah tidak valid' };
+  vecs = vecs.slice(0, MAKS_WAJAH_PER_KIRIM);
+
+  const pegawai = loadPegawai_();
+  if (pegawai.length === 0) return { ok: true, hasil: [{ status: 'kosong' }] };
+
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PRESENSI);
+  const rows = sh.getDataRange().getValues();
+  const now = new Date();
+  const tanggal = Utilities.formatDate(now, TZ, 'yyyy-MM-dd');
+  const jam = Utilities.formatDate(now, TZ, 'HH:mm:ss');
+  const nowMs = now.getTime();
+
+  const sudahDiproses = {};
+  const hasil = [];
+
+  vecs.forEach(function (vec) {
+    if (!validVec_(vec)) {
+      hasil.push({ status: 'error', error: 'Data wajah tidak valid' });
+      return;
     }
-  }
+    const c = cariPegawai_(vec, pegawai);
+    if (!c) {
+      hasil.push({ status: 'tidak_dikenali' });
+      return;
+    }
+    const p = c.p;
+    if (sudahDiproses[p.id]) return; // orang yang sama dua kali dalam satu kiriman
+    sudahDiproses[p.id] = true;
 
-  function tampilkanBanyak(r) {
-    $('sServer').textContent = 'terhubung';
-    if (!r.ok) {
-      setHasil('Gagal', 'bad', r.error || '');
-      log('ERROR: ' + (r.error || 'tidak diketahui'));
+    // cari baris presensi pegawai ini hari ini
+    let baris = -1;
+    for (let i = 1; i < rows.length; i++) {
+      if (teks_(rows[i][0]) === tanggal && teks_(rows[i][1]) === p.id) {
+        baris = i;
+        break;
+      }
+    }
+
+    if (baris !== -1) {
+      const terakhir = Number(rows[baris][6]) || 0;
+      if (nowMs - terakhir < COOLDOWN_MENIT * 60000) {
+        hasil.push({ status: 'cooldown', id: p.id, nama: p.nama, kecocokan: c.kecocokan });
+        return;
+      }
+      sh.getRange(baris + 1, 5).setValue(jam);             // kolom Pulang
+      sh.getRange(baris + 1, 6).setValue(c.kecocokan);     // kolom Kecocokan
+      sh.getRange(baris + 1, 7).setValue(nowMs);           // kolom Ms_Terakhir
+      hasil.push({ status: 'pulang', id: p.id, nama: p.nama, jam: jam, kecocokan: c.kecocokan });
       return;
     }
 
-    const box = $('hasil');
-    box.innerHTML = '';
-    box.className = 'hasil';
-    const suara = [];
-    let belumTerdaftar = 0;
-
-    (r.hasil || []).forEach(function (item) {
-      if (item.status === 'tidak_dikenali') { belumTerdaftar++; return; }
-      const t = tafsirItem(item);
-      if (!t) return;
-      const div = document.createElement('div');
-      div.className = 'baris ' + t.kelas;
-      div.textContent = t.teks;
-      if (t.sub) {
-        const s = document.createElement('small');
-        s.textContent = t.sub;
-        div.appendChild(s);
-      }
-      box.appendChild(div);
-      if (t.suara) suara.push(t.suara);
-      if (t.log) log(t.log);
-    });
-
-    if (belumTerdaftar > 0) {
-      const div = document.createElement('div');
-      div.className = 'baris bad';
-      div.textContent = 'Belum terdaftar';
-      if (belumTerdaftar > 1) {
-        const s = document.createElement('small');
-        s.textContent = belumTerdaftar + ' wajah';
-        div.appendChild(s);
-      }
-      box.appendChild(div);
-      suara.push('Belum terdaftar');
-      log('Belum terdaftar: ' + belumTerdaftar + ' wajah');
-    }
-
-    if (box.children.length === 0) {
-      setHasil('Menunggu wajah...');
-    } else {
-      hasilIsi = true;
-      hasilT = Date.now();
-    }
-    if (suara.length) bicara(suara.join('. '));
-  }
-
-  function tampilkanDaftar(r) {
-    if (!r.ok) {
-      setMsg('Gagal: ' + r.error);
-      log('Daftar gagal: ' + r.error);
-      bicara('Pendaftaran gagal', true);
-      return;
-    }
-    const kalimat = r.nama + (r.status === 'baru' ? ' berhasil didaftarkan' : ' datanya diperbarui');
-    setMsg(kalimat);
-    log('Daftar: ' + r.nama + ' (' + r.status + ')');
-    bicara(kalimat, true);
-  }
-
-  function handleEnroll(faces) {
-    if (!enroll) return;
-    if (faces.length === 0) { setMsg('Wajah belum terdeteksi.'); return; }
-    if (faces.length > 1) { setMsg('Harus tepat 1 wajah di kamera.'); return; }
-
-    const f = faces[0];
-    const now = performance.now();
-    if (f.detection.score < 0.7 || now - enroll.lastT < ENROLL_GAP_MS) return;
-
-    enroll.samples.push(f.descriptor);
-    enroll.lastT = now;
-    setMsg('Sampel ' + enroll.samples.length + '/' + ENROLL_SAMPLES);
-    if (enroll.samples.length < ENROLL_SAMPLES) return;
-
-    const avg = new Float32Array(128);
-    for (const s of enroll.samples) {
-      for (let i = 0; i < 128; i++) avg[i] += s[i] / ENROLL_SAMPLES;
-    }
-    const data = { action: 'enroll', id: enroll.id, nama: enroll.nama, pin: enroll.pin, vec: Array.from(avg) };
-    enroll = null;
-    setMsg('Menyimpan ke server...');
-    kirim(data)
-      .then(tampilkanDaftar)
-      .catch(function (err) {
-        setMsg('Gagal kirim: ' + err.message);
-        log('ERROR: ' + err.message);
-      })
-      .finally(function () { $('btnDaftar').disabled = false; });
-  }
-
-  function draw(faces) {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#00f0ff';
-    ctx.shadowColor = '#00f0ff';
-    ctx.shadowBlur = 14;
-    ctx.lineWidth = 2;
-    for (const f of faces) {
-      const b = f.detection.box;
-      ctx.strokeRect(b.x, b.y, b.width, b.height);
-    }
-    ctx.shadowBlur = 0;
-  }
-
-  $('btnMode').addEventListener('click', function () {
-    mode = mode === 'presensi' ? 'daftar' : 'presensi';
-    $('btnMode').textContent = 'Mode: ' + (mode === 'presensi' ? 'Presensi' : 'Daftar');
-    $('daftarBox').hidden = mode !== 'daftar';
-    enroll = null;
-    $('btnDaftar').disabled = false;
-    if (mode === 'presensi') {
-      setHasil('Menunggu wajah...');
-      setMsg('Hadapkan wajah ke kamera.');
-    } else {
-      setHasil('Mode daftar');
-      setMsg('Isi ID, nama, dan PIN, lalu tekan tombol.');
-    }
+    sh.appendRow([tanggal, p.id, p.nama, jam, '', c.kecocokan, nowMs]);
+    hasil.push({ status: 'masuk', id: p.id, nama: p.nama, jam: jam, kecocokan: c.kecocokan });
   });
 
-  $('btnDaftar').addEventListener('click', function () {
-    const id = $('inID').value.trim();
-    const nama = $('inNama').value.trim();
-    const pin = $('inPin').value.trim();
-    if (!id || !nama || !pin) {
-      setMsg('ID, nama, dan PIN wajib diisi.');
-      return;
-    }
-    enroll = { samples: [], lastT: 0, id: id, nama: nama, pin: pin };
-    $('btnDaftar').disabled = true;
-    setMsg('Pandangi kamera dan gerakkan kepala sedikit...');
-    log('Mulai daftar: ' + nama);
-  });
+  return { ok: true, hasil: hasil };
+}
 
-  $('btnStart').addEventListener('click', async function () {
-    if (APPS_SCRIPT_URL.indexOf('GANTI') === 0 || API_TOKEN.indexOf('GANTI') === 0) {
-      setMsg('Isi APPS_SCRIPT_URL dan API_TOKEN di dalam file dulu.');
-      return;
-    }
-    $('btnStart').disabled = true;
-    try {
-      setMsg('Membuka kamera...');
-      await startCamera();
-      $('sCam').textContent = 'aktif (' + video.videoWidth + '×' + video.videoHeight + ')';
-      log('Kamera aktif');
-      if (!modelsReady) await loadModels();
-      keepScreenAwake();
-      bicara('Presensi siap', true); // sekaligus mengaktifkan suara
-      running = true;
-      $('btnMode').disabled = false;
-      $('btnStart').textContent = 'Berjalan';
-      setMsg('Hadapkan wajah ke kamera.');
-      requestAnimationFrame(loop);
-    } catch (e) {
-      $('btnStart').disabled = false;
-      $('sCam').textContent = 'gagal';
-      setMsg(e.message);
-      log('ERROR: ' + e.message);
-    }
-  });
+function daftar_(body) {
+  const pin = PropertiesService.getScriptProperties().getProperty('ADMIN_PIN');
+  if (String(body.pin) !== pin) return { ok: false, error: 'PIN admin salah' };
+  if (!validVec_(body.vec)) return { ok: false, error: 'Data wajah tidak valid' };
 
-  async function loop() {
-    if (!running) return;
-    try {
-      if (video.readyState >= 2 && modelsReady) {
-        if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-        }
-        const faces = await faceapi
-          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions({ inputSize: DETECT_SIZE, scoreThreshold: 0.5 }))
-          .withFaceLandmarks()
-          .withFaceDescriptors();
-        draw(faces);
+  const id = String(body.id || '').trim();
+  const nama = String(body.nama || '').trim();
+  if (!id || !nama) return { ok: false, error: 'ID dan nama wajib diisi' };
 
-        if (mode === 'daftar') {
-          handleEnroll(faces);
-        } else {
-          // semua wajah yang cukup jelas dikirim sekaligus dalam satu permintaan
-          const siap = faces.filter(function (f) { return f.detection.score >= 0.7; });
-          if (siap.length > 0 && !busy && Date.now() - lastSend >= SCAN_GAP_MS) {
-            busy = true;
-            lastSend = Date.now();
-            const vecs = siap.slice(0, MAKS_WAJAH).map(function (f) { return Array.from(f.descriptor); });
-            kirim({ action: 'attend', vecs: vecs })
-              .then(tampilkanBanyak)
-              .catch(function (err) {
-                $('sServer').textContent = 'gagal';
-                setHasil('Gagal terhubung', 'bad', err.message);
-                log('ERROR: ' + err.message);
-              })
-              .finally(function () { busy = false; });
-          } else if (siap.length === 0 && hasilIsi && Date.now() - hasilT > HASIL_RESET_MS) {
-            setHasil('Menunggu wajah...');
-          }
-        }
-      }
-    } catch (e) {
-      log('ERROR deteksi: ' + e.message);
+  const sh = SpreadsheetApp.getActive().getSheetByName(SHEET_PEGAWAI);
+  const rows = sh.getDataRange().getValues();
+  const wajah = JSON.stringify(body.vec.map(function (v) { return Math.round(v * 1e6) / 1e6; }));
+
+  for (let i = 1; i < rows.length; i++) {
+    if (teks_(rows[i][0]) === id) {
+      sh.getRange(i + 1, 2).setValue(nama);
+      sh.getRange(i + 1, 4).setValue(wajah);
+      sh.getRange(i + 1, 5).setValue('Ya');
+      return { ok: true, status: 'diperbarui', nama: nama };
     }
-    requestAnimationFrame(loop);
   }
-})();
-</script>
-</body>
-</html>
+
+  sh.appendRow([id, nama, String(body.divisi || ''), wajah, 'Ya']);
+  return { ok: true, status: 'baru', nama: nama };
+}
